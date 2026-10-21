@@ -11,6 +11,7 @@ image di-push dari repo aplikasinya (`nilam-ocr-orchestration/deploy/push-nexus.
 | OCR backend: api + worker (satu image) | `charts/ocr-backend` | `./deploy.sh ocr-backend` | `ms-bribrain-nilam-ocr-orchestrator` |
 | RBAC admin UI | `charts/ocr-rbac-ui` | `./deploy.sh rbac-ui` | `mf-bribrain-nilam-ocr-admin-ui` |
 | Redis bersama untuk banyak team (env `shared`) | `charts/redis` | `./deploy.sh redis`, `scripts/services/redis/user.sh` | `redis` (salinan Docker Hub) |
+| NILAM OCR akta: 5 service, satu release per service | `charts/ocr-akta` | `./deploy.sh ocr-akta-<service>`, `./deploy.sh akta` | `ms-bribrain-nilam-ocr-akta-<service>` (folder Nexus sendiri) |
 
 ## Struktur
 
@@ -20,7 +21,7 @@ environments/<env>.env     target GKE + path Nexus + nama release (tidak di-comm
 environments/<env>/*.yaml  override values per chart untuk environment itu
 scripts/services/<service>/  script per service: deploy, operasi, dan probe
 scripts/                     helper bersama `_lib.sh` dan `kube.sh`
-deploy.sh                    entrypoint; bisa deploy backend lalu UI lewat `application`
+deploy.sh                    entrypoint; bisa deploy backend lalu UI lewat `application`, kelima service akta lewat `akta`
 scripts/services/ocr-backend/create-superadmin.sh  buat akun superadmin shared lewat nano
 .env                         rahasia lokal (akun Nexus), tidak di-commit
 ```
@@ -197,6 +198,103 @@ Pertama kali di env `shared`, urutannya:
 ./deploy.sh rbac-ui d25f1de --env shared
 ```
 
+## NILAM OCR akta
+
+Lima service akta pendirian, masing-masing image, release, Deployment, dan rollback sendiri, tapi satu chart
+`charts/ocr-akta`: template kelimanya sama, jadi chart dipasang lima kali dan `--set component=<service>` (diisi
+script) memilih service yang dirender. `environments/<env>/ocr-akta.yaml` memuat kelimanya sekaligus, sehingga
+URL antar-service (`<NAMA>_SERVICE_URL`) dihitung chart dari `fullnameOverride` + port, tidak ditulis tangan.
+
+| Service | Port | Release | Objek di cluster (Deployment, Service, ServiceAccount, PDB) | Memanggil |
+|---|---|---|---|---|
+| orchestrator (pintu masuk `POST /v1/extract-ocr`) | 8034 | `ocr-akta-orchestrator` | `ms-bribrain-nilam-ocr-akta-orchestrator` | keempat tahap |
+| extraction (render 300 DPI, PaddleOCR, DiT) | 8030 | `ocr-akta-extraction` | `ms-bribrain-nilam-ocr-akta-extraction` | guardrails |
+| guardrails (E5, model segmen, penilai buram) | 8031 | `ocr-akta-guardrails` | `ms-bribrain-nilam-ocr-akta-guardrails` | structuring |
+| structuring (LLM per segmen) | 8032 | `ocr-akta-structuring` | `ms-bribrain-nilam-ocr-akta-structuring` | scoring |
+| scoring (skor field → confidence) | 8033 | `ocr-akta-scoring` | `ms-bribrain-nilam-ocr-akta-scoring` | - |
+
+Image: `$NEXUS_REGISTRY/$AKTA_NEXUS_PATH/ms-bribrain-nilam-ocr-akta-<service>:<tag>`, folder
+`bribrain/dev/nilam-ocr-akta` (bukan `NEXUS_PATH` milik orchestrator). Image di-push dari repo
+`nilam-ocr-akta`; kelimanya membawa tag SHA monorepo yang sama, jadi `./deploy.sh akta <tag>` cukup satu tag.
+Bobot model sudah ikut di image: pod tidak mengunduh apa pun dan tidak butuh identitas GCP.
+
+Namespace: `AKTA_NAMESPACE`, yaitu `nilam-ocr-akta` (dev, cluster ddb) dan `bribrain-ocr-nilam` (shared; kuota
+`nilam` habis).
+
+### Secret aplikasi akta
+
+Satu Secret `nilam-ocr-akta-secrets` (`AKTA_SECRET`), dibuat manual seperti `ocr-orchestration`. Tidak dibaca
+lewat `envFrom`: tiap pod hanya memasang key miliknya (`services.<service>.secretEnv`, `secretKeyRef`).
+
+| Key | Dipakai | Wajib |
+|---|---|---|
+| `API_KEY` | kelimanya (diterima dari pemanggil dan dikirim ke tahap berikutnya) | ya |
+| `API_KEYS` | kelimanya; key lain yang masih diterima selama rotasi, dipisah koma | tidak |
+| `DATABASE_URL` | kelimanya: `postgresql+asyncpg://<user>:<password>@<ip privat>:5432/<db>`, schema `nilam_ocr_akta` | ya |
+| `LLM_AUTH_CLIENT_SECRET` | structuring | ya (`STRUCTURING_BACKEND=cloud`) |
+| `CACHE_URL` | structuring: cache prompt di Redis bersama, `REDIS_URL` user ACL akta (lihat di bawah). Tanpa key ini tiap pod memakai cache di dalam prosesnya | tidak |
+| `ORCHESTRATION_CALLBACK_KEY`, `ORCHESTRATION_API_KEY` | keempat tahap, hanya bila callback dinyalakan | tidak |
+| `ELASTIC_APM_SECRET_TOKEN`, `ELASTIC_APM_API_KEY` | kelimanya, hanya bila `apm.serverUrl` diisi | tidak |
+
+```bash
+./scripts/kube.sh --env shared -- kubectl create secret generic nilam-ocr-akta-secrets \
+  -n bribrain-ocr-nilam --from-env-file=/tmp/akta.env
+rm -f /tmp/akta.env
+```
+
+Secret dibaca saat pod start: setelah isinya berubah, `kubectl rollout restart` Deployment yang memakainya.
+
+### Sebelum deploy pertama
+
+- Tabel akta (schema `nilam_ocr_akta`) sudah ada di database `DATABASE_URL`; migrasi tidak dijalankan repo ini.
+- Empat `LLM_AUTH_*` structuring (bukan rahasia) di `environments/<env>/ocr-akta.yaml`. Selama kosong, render
+  structuring gagal dengan pesan yang menyebut key-nya, termasuk `--dry-run`.
+- `FILE_URL_ALLOWED_HOSTS`: host MinIO yang boleh dipakai `file_url`. Kosong = hanya host publik.
+- Redis cache prompt (opsional): user ACL dengan pola key `nilam_ocr_akta:*`, karena key cache-nya
+  `nilam_ocr_akta:nilam_system_prompt:active` (selalu ber-TTL, `PROMPT_CACHE_TTL_SECONDS`). User dengan pola lain
+  ditolak Redis (`NOPERM`); structuring tetap jalan tapi membaca prompt dari database di setiap job.
+  `REDIS_URL` dari Secret hasilnya jadi `CACHE_URL` di `nilam-ocr-akta-secrets`:
+
+  ```bash
+  ./scripts/services/redis/user.sh nilam-ocr-akta --env shared --to bribrain-ocr-nilam --keys 'nilam_ocr_akta:*'
+  ```
+- Pod menjangkau PaddleOCR PP-StructureV3 `http://10.213.191.187:5000/predict/json`, bukan PP-OCRv6
+  `10.213.128.67:8070` milik NPWP, serta identity provider dan LLM (`ap-southeast-3`) untuk structuring.
+
+### Deploy
+
+```bash
+./deploy.sh akta <tag> --env shared --dry-run         # kelimanya; selalu dry-run dulu
+./deploy.sh akta <tag> --env shared                   # scoring, structuring, guardrails, extraction, orchestrator
+./deploy.sh ocr-akta-extraction <tag> --env shared    # satu service; rollback = tag sebelumnya
+```
+
+`akta` men-deploy dari tahap terakhir ke orchestrator, supaya tiap tahap baru naik saat tahap tujuan
+hand-off-nya sudah ada. Gagal di satu service = berhenti di situ (service sebelumnya tetap di tag baru).
+
+Perilaku yang perlu diketahui:
+
+- Mode poll: `orchestration.callbackEnabled: false`, tanpa `ORCHESTRATION_URL`. Orkestrasi pusat membaca
+  `GET /v1/extract-ocr/{request_id}` di orchestrator akta. Untuk callback, isi `orchestration.url` dan
+  `callbackEnabled: true` (+ `ORCHESTRATION_CALLBACK_KEY` di Secret).
+- HPA mati, satu replika per service, `maxSurge: 0`: rollout tidak memesan pod di atas jatah, jadi service mati
+  sebentar selama pod baru menyala. Total request 2,75 CPU / 11 Gi; memory limit = request, tanpa CPU limit.
+- extraction dan guardrails: satu job per pod (`PIPELINE_MAX_CONCURRENT_JOBS=1`) dan satu thread torch per CPU
+  request. Kapasitas ditambah lewat replika (`autoscaling` per service), bukan job per pod.
+- Startup probe memberi waktu muat model (extraction 6 menit, guardrails 10 menit); readiness `/ready`, liveness
+  TCP. Grace period tahap panjang 150 detik: job yang berjalan diberi 120 detik selesai, selebihnya diambil ulang
+  pod lain setelah lease 300 detik.
+- Root filesystem read-only; service hanya menulis ke `/tmp` (emptyDir, juga `HOME`).
+
+Validasi lokal (lint per service, karena `component` wajib):
+
+```bash
+for c in orchestrator extraction guardrails structuring scoring; do
+  helm lint charts/ocr-akta -f environments/shared/ocr-akta.yaml --set component=$c --strict
+done
+./deploy.sh akta <tag> --env shared --dry-run | kubeconform -strict -summary
+```
+
 ## Autoscaling (HPA)
 
 HPA aktif untuk api, worker, dan admin UI (`autoscaling.*` di values chart). Selama HPA aktif, Deployment tidak
@@ -236,6 +334,8 @@ berubah kecuali memakai IP statis (`service.loadBalancerIP`).
 ## Standar untuk servis berikutnya
 
 - Satu chart per komponen yang di-deploy terpisah; api dan worker yang berbagi image tetap satu chart.
+- Beberapa service dengan template sama (akta): satu chart generik yang dipasang sekali per service, dipilih
+  dengan `component`, tetap satu release, image, dan rollback per service.
 - Label `app.kubernetes.io/{name,instance,component,version,part-of}`; selector hanya name, instance, component.
 - Image dari Nexus dengan tag sha yang immutable dan `pullPolicy: IfNotPresent`.
 - Rahasia di Secret yang dibuat di luar chart (`existingSecret`), tidak pernah di values.

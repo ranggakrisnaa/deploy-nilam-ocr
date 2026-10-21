@@ -1,0 +1,33 @@
+{{- /* Requires metrics-server (check: kubectl top pod -n <ns>). */ -}}
+{{- $hpa := (index .Values.services (include "ocr-akta.component" .)).autoscaling }}
+{{- if $hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ocr-akta.fullname" . }}
+  labels:
+    {{- include "ocr-akta.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ocr-akta.fullname" . }}
+  minReplicas: {{ $hpa.minReplicas }}
+  maxReplicas: {{ $hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $hpa.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      # A stage stopped mid-job is picked up again only after its lease (300 s), so scale down slowly.
+      stabilizationWindowSeconds: 600
+      policies:
+        # One pod at a time, so a load dip never drops several replicas at once.
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+{{- end }}

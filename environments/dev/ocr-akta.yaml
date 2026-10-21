@@ -1,0 +1,68 @@
+# dev overrides for charts/ocr-akta, all five akta services (one release each; the deploy script picks one with
+# --set component=<service>). image.*, component and existingSecret come from environments/dev.env via the scripts.
+
+commonEnv:
+  # Load tests of the ML team through kubectl port-forward to the orchestrator (/v1/extract-ocr-test).
+  TESTING_ENDPOINTS: "true"
+  # Hosts of the presigned MinIO URLs the orchestrator downloads (file_url). FILL IN before the first deploy:
+  # empty = only public hosts, so every internal MinIO URL is refused.
+  FILE_URL_ALLOWED_HOSTS: ""
+
+# Poll mode (chart default): the central orchestrator reads GET /v1/extract-ocr/{request_id}. For callbacks, set
+# url (e.g. http://ms-bribrain-nilam-ocr-orchestrator.ocr-orchestration.svc.cluster.local) and callbackEnabled: true,
+# with ORCHESTRATION_CALLBACK_KEY in the akta Secret, once the central orchestrator expects them from akta.
+orchestration:
+  callbackEnabled: false
+  url: ""
+
+# Object names = Bitbucket repo = Nexus image (deployment guide 4.5). The URLs between the services follow them.
+# HPA off and one replica each until the akta resource share is agreed: extraction alone holds 6Gi.
+services:
+  orchestrator:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-orchestrator
+    # The dev node pool has no room for a surge pod (see ocr-backend.yaml): stop one, then start one.
+    strategy: &stopThenStart
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
+  extraction:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-extraction
+    strategy: *stopThenStart
+    env:
+      # PaddleOCR PP-StructureV3, the engine of the corpus and every akta model. NOT 10.213.128.67:8070 (PP-OCRv6
+      # of NPWP: no table markdown, no layout scores, and 404 without a path).
+      EXTRACTION_OCR_URL: http://10.213.191.187:5000/predict/json
+  guardrails:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-guardrails
+    strategy: *stopThenStart
+  structuring:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-structuring
+    strategy: *stopThenStart
+    env:
+      # FILL IN before the first deploy (structuring refuses to start without them): not secrets, the same values
+      # as the services/structuring/.env that already runs on the VM. LLM_AUTH_CLIENT_SECRET is in the Secret.
+      LLM_AUTH_TENANT_ID: ""
+      LLM_AUTH_CLIENT_ID: ""
+      LLM_AUTH_BRIDGE_ROLE: ""
+      LLM_AUTH_TARGET_ROLE: ""
+  scoring:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-scoring
+    strategy: *stopThenStart
+
+# Same node rules as the backend (see ocr-backend.yaml).
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: NotIn
+              values: ["gke-gc-ddb-dev-gke-c-gc-dgv-dev-ndp-c-42b3b8a0-l5uf"]
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 50
+        preference:
+          matchExpressions:
+            - key: cloud.google.com/gke-nodepool
+              operator: In
+              values: ["gc-dgv-dev-ndp-cluster01-03"]

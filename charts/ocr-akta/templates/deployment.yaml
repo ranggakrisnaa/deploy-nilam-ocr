@@ -1,0 +1,141 @@
+{{- $component := include "ocr-akta.component" . }}
+{{- $svc := index .Values.services $component }}
+{{- $env := include "ocr-akta.envMap" . | fromYaml }}
+{{- /* Structuring refuses to start without these; failing the render beats a CrashLoop until helm's timeout. */}}
+{{- if and (eq $component "structuring") (eq (get $env "STRUCTURING_BACKEND") "cloud") (ne .Values.environment "local") }}
+{{- range list "LLM_AUTH_TENANT_ID" "LLM_AUTH_CLIENT_ID" "LLM_AUTH_BRIDGE_ROLE" "LLM_AUTH_TARGET_ROLE" }}
+{{- if not (get $env .) }}
+{{- fail (printf "services.structuring.env.%s is empty: STRUCTURING_BACKEND=cloud needs the four LLM_AUTH_* (environments/<env>/ocr-akta.yaml)" .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ocr-akta.fullname" . }}
+  labels:
+    {{- include "ocr-akta.labels" . | nindent 4 }}
+spec:
+  {{- if not $svc.autoscaling.enabled }}
+  # Omitted while the HPA is on: otherwise every helm upgrade resets the count the HPA chose.
+  replicas: {{ $svc.replicas }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    {{- toYaml $svc.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "ocr-akta.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "ocr-akta.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ocr-akta.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "ocr-akta.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ $component }}
+          image: {{ include "ocr-akta.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          env:
+            {{- range $name, $value := $env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # One key per variable, only those this service reads: no pod sees another service's secrets.
+            {{- range $svc.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" $.Values.existingSecret }}
+                  key: {{ .key | default .name }}
+                  {{- if .optional }}
+                  optional: true
+                  {{- end }}
+            {{- end }}
+            {{- if .Values.apm.serverUrl }}
+            {{- range list "ELASTIC_APM_SECRET_TOKEN" "ELASTIC_APM_API_KEY" }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.existingSecret }}
+                  key: {{ . }}
+                  optional: true
+            {{- end }}
+            {{- end }}
+          # Model loading can take minutes; liveness and readiness start only after the port opens.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+            failureThreshold: {{ $svc.startupFailureThreshold }}
+          # /ready answers 503 while a dependency this pod cannot work without (the database, its models) is down:
+          # right for readiness, wrong for liveness.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          # TCP only: restarts a hung process without restarting every pod on a database blip.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Seconds to keep serving after SIGTERM is scheduled, so the Service drops the pod first.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

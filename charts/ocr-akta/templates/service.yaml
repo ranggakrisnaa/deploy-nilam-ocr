@@ -1,0 +1,30 @@
+{{- $svc := index .Values.services (include "ocr-akta.component" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ocr-akta.fullname" . }}
+  labels:
+    {{- include "ocr-akta.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  {{- with .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  selector:
+    {{- include "ocr-akta.selectorLabels" . | nindent 4 }}
+  ports:
+    # The service's own port, so http://<name>:<port> is the same address inside the cluster as on a laptop.
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: http
+      protocol: TCP

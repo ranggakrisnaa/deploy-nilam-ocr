@@ -1,0 +1,59 @@
+# shared overrides for charts/ocr-akta, all five akta services (one release each; the deploy script picks one with
+# --set component=<service>). image.*, component and existingSecret come from environments/shared.env via the
+# scripts. Namespace bribrain-ocr-nilam (the nilam quota is used up), shared with NPWP and SPR. Pods land on the
+# untainted pool, Services stay ClusterIP like the other nilam services, and APM stays off until a server
+# reachable from this cluster is known.
+#
+# Database: a plain DATABASE_URL (postgresql+asyncpg://<user>:<password>@<private ip>:5432/<db>, schema
+# nilam_ocr_akta) in the akta Secret, no Cloud SQL connector. The akta tables must exist before the first deploy.
+# Model weights are baked into the images: the pods need no GCS access and no GCP identity.
+
+commonEnv:
+  # Load tests of the ML team through kubectl port-forward to the orchestrator (/v1/extract-ocr-test).
+  TESTING_ENDPOINTS: "true"
+  # Hosts of the presigned MinIO URLs the orchestrator downloads (file_url). FILL IN before the first deploy:
+  # empty = only public hosts, so every internal MinIO URL is refused.
+  FILE_URL_ALLOWED_HOSTS: ""
+
+# Poll mode, as NPWP on this cluster: the central orchestrator reads GET /v1/extract-ocr/{request_id}. Its dev
+# address is in the ddb cluster, not reachable from here; set url and callbackEnabled: true once a path exists.
+orchestration:
+  callbackEnabled: false
+  url: ""
+
+# Object names = Bitbucket repo = Nexus image (deployment guide 4.5), like ms-bribrain-nilam-ocr-npwp-* next door.
+# HPA off and one replica each, like the other services of this namespace. Total requests 2.75 CPU / 11Gi
+# (see charts/ocr-akta/values.yaml): WAITING for the team's resource share.
+# maxSurge 0: a rollout never reserves a pod above the share; the service is down while the new pod starts.
+services:
+  orchestrator:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-orchestrator
+    strategy: &stopThenStart
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
+  extraction:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-extraction
+    strategy: *stopThenStart
+    env:
+      # PaddleOCR PP-StructureV3, the engine of the corpus and every akta model. NOT 10.213.128.67:8070 (PP-OCRv6
+      # of NPWP). Passed end-to-end from the BRI network on 2026-10-21; check it is reachable from the pods.
+      EXTRACTION_OCR_URL: http://10.213.191.187:5000/predict/json
+  guardrails:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-guardrails
+    strategy: *stopThenStart
+  structuring:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-structuring
+    strategy: *stopThenStart
+    env:
+      # FILL IN before the first deploy (structuring refuses to start without them): not secrets, the same values
+      # as the services/structuring/.env that already runs on the VM. LLM_AUTH_CLIENT_SECRET is in the Secret.
+      # Egress to the identity provider and the LLM region (ap-southeast-3) must be open from this cluster.
+      LLM_AUTH_TENANT_ID: ""
+      LLM_AUTH_CLIENT_ID: ""
+      LLM_AUTH_BRIDGE_ROLE: ""
+      LLM_AUTH_TARGET_ROLE: ""
+  scoring:
+    fullnameOverride: ms-bribrain-nilam-ocr-akta-scoring
+    strategy: *stopThenStart

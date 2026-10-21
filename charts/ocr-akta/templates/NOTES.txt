@@ -1,0 +1,10 @@
+{{- $component := include "ocr-akta.component" . }}
+{{- $svc := index .Values.services $component }}
+{{ include "ocr-akta.fullname" . }} ({{ $component }}) {{ include "ocr-akta.tag" . }} di namespace {{ .Release.Namespace }}.
+
+Pod:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Dari dalam cluster: http://{{ include "ocr-akta.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ $svc.port }}
+
+Pod baru Ready setelah /ready menjangkau dependensinya (database, model).

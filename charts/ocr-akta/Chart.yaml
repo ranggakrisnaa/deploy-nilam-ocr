@@ -1,0 +1,11 @@
+apiVersion: v2
+name: ocr-akta
+description: NILAM OCR akta pendirian - one of its five services per release (orchestrator, extraction, guardrails, structuring, scoring), chosen by `component`.
+type: application
+# Chart version: bump on every template or values change.
+version: 1.0.0
+# Default image tag when image.tag is empty. Deploy scripts always pass the git short sha instead.
+appVersion: "7278748"
+kubeVersion: ">=1.25.0-0"
+maintainers:
+  - name: BRIBrain NILAM

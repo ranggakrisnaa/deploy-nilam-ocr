@@ -1,0 +1,361 @@
+# Defaults for every environment. Environment-specific values live in environments/<env>/ocr-akta.yaml.
+#
+# One chart, five releases: each akta service is its own image, release, Deployment and rollback
+# (scripts/services/ocr-akta/deploy.sh <service> <tag>), but the five share every template. `component` picks the
+# service this release renders; the other entries of `services` are still read, for the URLs to the services it
+# calls (`upstreams`). Source: nilam-ocr-akta deploy/helm/nilam-ocr-akta 0.2.0 (main eab7fc7).
+
+# orchestrator | extraction | guardrails | structuring | scoring. Set by the deploy script (--set component=...).
+component: ""
+
+nameOverride: ""
+
+image:
+  registry: new-nexus.gcp.bri.co.id
+  # Set by the deploy script: $AKTA_NEXUS_PATH/$AKTA_IMAGE_PREFIX-<component>.
+  repository: ""
+  # Empty = .Chart.AppVersion. Use immutable tags (git short sha), never a moving tag like "dev".
+  tag: ""
+  # Optional sha256:... digest; wins over the tag when set.
+  digest: ""
+  # IfNotPresent is safe because tags are immutable.
+  pullPolicy: IfNotPresent
+
+# Docker registry Secrets for Nexus, created by scripts/_lib.sh (ensure_pull_secret).
+imagePullSecrets:
+  - name: nexus-pull-secret
+
+# Application secrets (API_KEY, DATABASE_URL, LLM_AUTH_CLIENT_SECRET, ...), created outside the chart so they never
+# live in values files; see README "Secret aplikasi akta". Not read with envFrom: each service mounts only the keys
+# of its own `services.<name>.secretEnv`.
+existingSecret: nilam-ocr-akta-secrets
+
+# ENVIRONMENT of the services: anything but `local` turns on their start-up guards (no mock backend, no
+# localhost URL, API key required).
+environment: production
+
+# Plain env vars of every service, rendered before services.<name>.env (which wins). Empty values are not rendered,
+# so an environment can switch a default off with "".
+commonEnv:
+  # Hosts file_url may point at (presigned MinIO), comma-separated; ".example.internal" = every subdomain.
+  # Empty = only hosts that resolve to public addresses, so a MinIO on the internal network is refused.
+  FILE_URL_ALLOWED_HOSTS: ""
+  # Limit on the whole file_url download. The orchestrator downloads inside the caller's request, so keep it
+  # below the central orchestrator's timeout.
+  FILE_URL_TIMEOUT_SECONDS: "60"
+  # Schema of the akta tables. Empty = nilam_ocr_akta. The services read it from the process environment.
+  DATABASE_SCHEMA: ""
+  # `-test` endpoints (/v1/extract-ocr-test, /v1/<stage>/jobs-test) on the testing_* tables. Dev only.
+  TESTING_ENDPOINTS: "false"
+
+# How the four pipeline stages tell the central orchestrator a request ended. Rendered on pipeline services only.
+orchestration:
+  # false = poll mode: no callback is sent or queued, and the stages start without a URL; the central orchestrator
+  # reads GET /v1/extract-ocr/{request_id} on the akta orchestrator instead.
+  callbackEnabled: false
+  url: ""
+  callbackPath: /v1/ocr-callback
+  # result = one callback per request answered 202, authenticated with X-Callback-Key (ORCHESTRATION_CALLBACK_KEY
+  # in existingSecret); stage = one callback per stage with X-API-Key (ORCHESTRATION_API_KEY).
+  callbackFormat: result
+  timeoutSeconds: "10"
+
+# Elastic APM. Empty serverUrl = no APM env rendered and the agent is not loaded. Token/API key belong in
+# existingSecret (ELASTIC_APM_SECRET_TOKEN / ELASTIC_APM_API_KEY, both optional), never here. The services never
+# send request bodies, headers or local variables (akta text, names, API keys).
+apm:
+  serverUrl: ""
+  # Empty = ENVIRONMENT.
+  environment: ""
+  sampleRate: "1.0"
+
+serviceAccount:
+  create: true
+  # Empty = fullname.
+  name: ""
+  annotations: {}
+
+# Pods never call the Kubernetes API.
+automountServiceAccountToken: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  # appuser in the five images (first useradd on python:3.11-slim). The images set USER by name, so the kubelet
+  # needs the numeric id to verify runAsNonRoot.
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  # The services write only to /tmp (an emptyDir, HOME too); the model weights are baked into the image.
+  readOnlyRootFilesystem: true
+
+# Scheduling rules (plain pod-spec objects), for every service of the release.
+nodeSelector: {}
+affinity: {}
+tolerations: []
+# Soft spread over nodes, so one node loss does not take every replica.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+
+podAnnotations: {}
+podLabels: {}
+
+service:
+  # ClusterIP: the stages are internal, and the central orchestrator calls the akta orchestrator inside the cluster.
+  type: ClusterIP
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  annotations: {}
+
+# maxUnavailable rather than minAvailable: with one replica, minAvailable: 1 would block node drains forever.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+revisionHistoryLimit: 5
+
+# Per service. Keys:
+#   fullnameOverride : object names; environments/* set the Bitbucket repo name ms-bribrain-nilam-ocr-akta-<name>.
+#                      Empty = ocr-akta-<name>. The services calling this one take its URL from here.
+#   port             : container and Service port; URLs between services are http://<fullname>:<port>.
+#   pipeline         : one of the four asynchronous stages (gets the orchestration.* env).
+#   upstreams        : services it calls; the chart sets <NAME>_SERVICE_URL for each.
+#   secretEnv        : keys of existingSecret mounted as env vars of the same name (secretKeyRef), {name, optional}.
+#   env              : plain env vars, over commonEnv.
+#   startupFailureThreshold : startup probe tries, 2 s apart, before the kubelet restarts a pod still loading.
+# Resources: no CPU limit on purpose (CFS throttling hurts latency); memory stays capped because it cannot be
+# throttled. Torch threads follow the CPU request. Requests below are the measured peaks (nilam-ocr-akta, 2026-10-20).
+#
+# Job lifecycle: shutdown waits for running jobs up to PIPELINE_DRAIN_TIMEOUT_SECONDS; a job whose process died is
+# picked up again by another pod after its lease (300 s), at most 3 runs. The grace period of the long stages is
+# drain + preStop + margin (150 = 120 + 5 + 25).
+services:
+  # The single entry point: POST /v1/extract-ocr (file checks, hand-off to extraction, waits for the pipeline) and
+  # GET /v1/extract-ocr/{request_id}. The database only logs every answer (nilam_ocr_results), best effort.
+  orchestrator:
+    fullnameOverride: ""
+    port: 8034
+    pipeline: false
+    upstreams: [extraction, guardrails, structuring, scoring]
+    secretEnv:
+      - name: API_KEY
+      # Other accepted keys during rotation, comma-separated.
+      - name: API_KEYS
+        optional: true
+      - name: DATABASE_URL
+    env:
+      # Wait for the pipeline before answering 202; 0 = do not wait. Akta takes minutes: 202 is the norm.
+      PIPELINE_WAIT_SECONDS: "15"
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    # A POST can hold the hand-off plus the pipeline wait; shutdown waits for held requests.
+    terminationGracePeriodSeconds: 60
+    startupFailureThreshold: 15
+    # Each request holds its document (up to MAX_UPLOAD_BYTES, 50 MB) while it waits for the pipeline.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        memory: 1Gi
+
+  # Stage 1: render at 300 DPI, PaddleOCR per page, image metrics, DiT (torch).
+  extraction:
+    fullnameOverride: ""
+    port: 8030
+    pipeline: true
+    upstreams: [guardrails]
+    secretEnv: &stageSecrets
+      - name: API_KEY
+      - name: API_KEYS
+        optional: true
+      - name: DATABASE_URL
+      # Only read with orchestration.callbackEnabled (result / stage format).
+      - name: ORCHESTRATION_CALLBACK_KEY
+        optional: true
+      - name: ORCHESTRATION_API_KEY
+        optional: true
+    env:
+      EXTRACTION_BACKEND: http
+      # PaddleOCR PP-StructureV3, the engine of the corpus and of every model; set per environment.
+      EXTRACTION_OCR_URL: ""
+      EXTRACTION_OCR_TIMEOUT_SECONDS: "120"
+      # Pages sent at the same time per document; raise only after measuring 1/2/4/8 against the OCR service.
+      EXTRACTION_OCR_CONCURRENCY: "1"
+      # One job per pod: a job's peak is set by its largest page; capacity = replicas.
+      PIPELINE_MAX_CONCURRENT_JOBS: "1"
+      EXTRACTION_ENCODER_BACKEND: dit
+      EXTRACTION_DEVICE: cpu
+      # = resources.requests.cpu; without it torch starts as many threads as the node has cores.
+      EXTRACTION_TORCH_THREADS: "1"
+      PIPELINE_DRAIN_TIMEOUT_SECONDS: "120"
+      PIPELINE_OUTBOX: "true"
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    terminationGracePeriodSeconds: 150
+    # Loads DiT from the image (tens of seconds). 180 x 2 s = 6 minutes.
+    startupFailureThreshold: 180
+    # One 300 DPI page is held at a time, but a phone photo page (~32 x 47 in) is up to 410 MB and its image
+    # metrics copy it a few times in float32: a 137 MP page of the corpus peaked at 3.4 GB. 6Gi leaves margin.
+    resources:
+      requests:
+        cpu: "1"
+        memory: 6Gi
+      limits:
+        memory: 6Gi
+
+  # Stage 2: E5, blank/ocr_lost rules, blur rater, segment model, guardrails score per segment (torch).
+  guardrails:
+    fullnameOverride: ""
+    port: 8031
+    pipeline: true
+    upstreams: [structuring]
+    secretEnv: *stageSecrets
+    env:
+      GUARDRAILS_BACKEND: model
+      GUARDRAILS_DEVICE: cpu
+      # = resources.requests.cpu.
+      GUARDRAILS_TORCH_THREADS: "1"
+      # One job per pod: E5 + models load ~0.9 GB, a job peaks ~1.8 GB whatever its length (E5 16 pages at a time).
+      PIPELINE_MAX_CONCURRENT_JOBS: "1"
+      PIPELINE_DRAIN_TIMEOUT_SECONDS: "120"
+      PIPELINE_OUTBOX: "true"
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    terminationGracePeriodSeconds: 150
+    # Loads E5 + segment model + blur rater (~1.1 GB) from the image. 300 x 2 s = 10 minutes.
+    startupFailureThreshold: 300
+    resources:
+      requests:
+        cpu: "1"
+        memory: 3Gi
+      limits:
+        memory: 3Gi
+
+  # Stage 3: lintasan B (LLM) per segment, in parallel. Egress to the identity provider and the LLM.
+  structuring:
+    fullnameOverride: ""
+    port: 8032
+    pipeline: true
+    upstreams: [scoring]
+    # `cloud` LLM backend: the client secret of the credential chain. With `http`, drop LLM_AUTH_CLIENT_SECRET.
+    secretEnv:
+      - name: API_KEY
+      - name: API_KEYS
+        optional: true
+      - name: DATABASE_URL
+      - name: ORCHESTRATION_CALLBACK_KEY
+        optional: true
+      - name: ORCHESTRATION_API_KEY
+        optional: true
+      - name: LLM_AUTH_CLIENT_SECRET
+      # Prompt cache in the shared Redis: REDIS_URL of the team's ACL user (scripts/services/redis/user.sh), whose
+      # key pattern must allow nilam_ocr_akta:*. Absent = a cache inside each pod.
+      - name: CACHE_URL
+        optional: true
+    env:
+      # `cloud`: outside ENVIRONMENT=local structuring refuses to start without the four LLM_AUTH_* below plus
+      # LLM_AUTH_CLIENT_SECRET. `http` (a model hosted directly): LLM_URL and LLM_MODEL only.
+      STRUCTURING_BACKEND: cloud
+      LLM_MODEL: openai.gpt-oss-120b-1:0
+      LLM_REGION: ap-southeast-3
+      # Not secrets (tenant/client ids, role ARNs); set per environment.
+      LLM_AUTH_TENANT_ID: ""
+      LLM_AUTH_CLIENT_ID: ""
+      LLM_AUTH_BRIDGE_ROLE: ""
+      LLM_AUTH_TARGET_ROLE: ""
+      # LLM attempts per segment, merged by majority vote (production = 3).
+      EXTRACTION_ATTEMPTS: "3"
+      STRUCTURING_SEGMENT_WORKERS: "4"
+      # Prompts (nilam_system_prompt) are read per job through a cache (CACHE_URL, from the Secret above); a
+      # changed prompt takes effect after the TTL without a restart.
+      PROMPT_CACHE_TTL_SECONDS: "300"
+      PIPELINE_DRAIN_TIMEOUT_SECONDS: "120"
+      PIPELINE_OUTBOX: "true"
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    terminationGracePeriodSeconds: 150
+    startupFailureThreshold: 15
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+
+  # Stage 4 (last): field scores -> confidence, the answer object.
+  scoring:
+    fullnameOverride: ""
+    port: 8033
+    pipeline: true
+    upstreams: []
+    secretEnv: *stageSecrets
+    env:
+      SCORING_BACKEND: field_score
+      PIPELINE_DRAIN_TIMEOUT_SECONDS: "30"
+      PIPELINE_OUTBOX: "true"
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    terminationGracePeriodSeconds: 45
+    # Loads two field score models (< 1 MB). 45 x 2 s = 90 s.
+    startupFailureThreshold: 45
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
