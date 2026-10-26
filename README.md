@@ -11,6 +11,7 @@ image di-push dari repo aplikasinya (`nilam-ocr-orchestration/deploy/push-nexus.
 | OCR backend: api + worker (satu image) | `charts/ocr-backend` | `./deploy.sh ocr-backend` | `ms-bribrain-nilam-ocr-orchestrator` |
 | RBAC admin UI | `charts/ocr-rbac-ui` | `./deploy.sh rbac-ui` | `mf-bribrain-nilam-ocr-admin-ui` |
 | Redis bersama untuk banyak team (env `shared`) | `charts/redis` | `./deploy.sh redis`, `scripts/services/redis/user.sh` | `redis` (salinan Docker Hub) |
+| MinIO untuk service OCR per dokumen (env `shared`) | `charts/minio` | `./deploy.sh minio` | `minio` (build dari source) |
 
 ## Struktur
 
@@ -19,7 +20,7 @@ charts/<chart>/            chart generik, tanpa nilai khusus environment
 environments/<env>.env     target GKE + path Nexus + nama release (tidak di-commit; salin dari <env>.env.example)
 environments/<env>/*.yaml  override values per chart untuk environment itu
 scripts/services/<service>/  script per service: deploy, operasi, dan probe
-scripts/                     helper bersama `_lib.sh` dan `kube.sh`
+scripts/                     helper bersama `_lib.sh`, `kube.sh`, `secret.sh` (ubah satu key Secret), `env.sh` (lihat env)
 deploy.sh                    entrypoint; bisa deploy backend lalu UI lewat `application`
 scripts/services/ocr-backend/create-superadmin.sh  buat akun superadmin shared lewat nano
 .env                         rahasia lokal (akun Nexus), tidak di-commit
@@ -56,7 +57,7 @@ supaya rahasia tidak pernah masuk values. Isinya `.env` aplikasi dengan alamat v
 ```bash
 kubectl create secret generic ocr-orchestration -n <namespace> --from-env-file=/tmp/ocr.env
 ./scripts/kube.sh --env shared -- kubectl create secret generic ocr-orchestration \
-  -n nilam-ocr-orchestrator --from-env-file=/tmp/ocr.env                 # cluster private
+  -n bribrain-ocr-nilam --from-env-file=/tmp/ocr.env                 # cluster private
 ```
 
 Untuk konfigurasi Bedrock aplikasi, tambahkan tiga variabel ini ke file `/tmp/ocr.env`:
@@ -69,6 +70,11 @@ Chart meneruskan isi Secret `ocr-orchestration` ke container API dan worker tanp
 
 URL di Secret itu (`REDIS_URL`, `OCR_<TYPE>_SERVICE_URL`, `DATAHUB_SERVICE_URL`) pakai FQDN
 `<service>.<namespace>.svc.cluster.local` bila servisnya ada di namespace lain.
+
+Ubah satu key tanpa membuat ulang Secret: `./scripts/secret.sh --env shared [-n <namespace>]`. Ketik nama Secret,
+pilih key (nomor atau nama), ketik nilai baru dua kali (tersembunyi); di akhir script menawarkan restart api/worker.
+Lihat isinya: `./scripts/env.sh --env shared [<secret> | deploy/<nama>] [--reveal]` (bawaan: Secret
+`$BACKEND_SECRET`; `deploy/<nama>` = env yang benar-benar dilihat container). Nilai rahasia disamarkan tanpa `--reveal`.
 
 ## Deploy
 
@@ -135,8 +141,9 @@ Permanen: ubah `environments/dev.env`. Environment baru (mis. `prd`): salin `env
 ## Cluster private (env `shared`)
 
 `environments/shared.env` menargetkan `gc-bigpool-dev-gke-cluster-01` di project `shared-kubecluster-dev-01`,
-dengan namespace per servis: `nilam-ocr-orchestrator` (backend dan Bedrock probe sesuai `shared.env`) dan
-`nilam-ocr-rbac-ui` (admin UI).
+dengan backend dan admin UI di namespace `bribrain-ocr-nilam` (Bedrock probe di `nilam`). Resource api, worker, dan
+UI di cluster ini: request CPU 200m dan memory 512Mi, limit CPU 300m dan memory 512Mi
+(`environments/shared/*.yaml`).
 Control plane-nya hanya punya endpoint private yang dibuka untuk subnet bastion, jadi bila `GKE_BASTION` diisi
 script membuka tunnel SOCKS lewat IAP ke bastion itu (`gcloud compute ssh --tunnel-through-iap -- -D`),
 memasang `proxy-url` di kubeconfig sementara, dan menutup tunnel saat selesai. Semua tetap dijalankan dari
@@ -191,11 +198,125 @@ Pertama kali di env `shared`, urutannya:
 
 ```bash
 ./scripts/kube.sh --env shared -- kubectl apply -f environments/shared/redis-storageclass.yaml
-./scripts/services/redis/user.sh nilam-ocr --env shared --to nilam-ocr-orchestrator --keys 'ocr ocr:* arq:* datahub:*'
+./scripts/services/redis/user.sh nilam-ocr --env shared --to bribrain-ocr-nilam --keys 'ocr ocr:* arq:* datahub:*'
 ./deploy.sh redis 7.4.7-alpine --env shared
 ./deploy.sh ocr-backend ec05d54 --env shared    # REDIS_URL dari Secret redis-nilam-ocr
 ./deploy.sh rbac-ui d25f1de --env shared
 ```
+
+## MinIO (env `shared`)
+
+Object storage single-node untuk service OCR per dokumen (KTP, NIB, NPWP, slip gaji, ...): release
+`nilam-ocr-minio` di namespace `bribrain-ocr-nilam`, PVC 20Gi Hyperdisk. Alamat dalam cluster:
+`http://nilam-ocr-minio.bribrain-ocr-nilam.svc.cluster.local:9000` (API S3) dan `:8080` (console). Pengganti MinIO
+di cluster dev (`ocr-dev/minio`, IP publik `34.101.120.81`), yang tidak terjangkau dari cluster shared. Bukan HA:
+restart pod menghentikan object storage semua service beberapa detik.
+
+Chart diporting dari `nilam-ocr-orchestration/deploy/templates/minio.yaml`: image, port, dan sesi console 168h
+sama. Bedanya: image dari Nexus, root credential dari Secret di luar chart, pod non-root dengan root filesystem
+read-only, dan Service ClusterIP. LoadBalancer (`minio-public` di chart lama) jadi opsional lewat
+`externalService.enabled`; mati secara default karena HTTP tanpa TLS.
+
+Sekali di awal:
+
+```bash
+# Image hasil build nilam-ocr-orchestration/deploy/minio/Dockerfile, disalin dari GAR ke Nexus
+docker buildx imagetools create \
+  --tag new-nexus.gcp.bri.co.id/bribrain/dev/nilam/nilam-ocr-orchestrator/minio:RELEASE.2025-04-22T22-12-26Z \
+  asia-southeast2-docker.pkg.dev/common-cicd-dev-01/gc-bribrain-dev-gar-temp-01/minio:RELEASE.2025-04-22T22-12-26Z
+
+# Root credential acak, tanpa lewat argumen shell
+./scripts/kube.sh --env shared -- bash -ceu '
+  d=$(mktemp -d); trap "rm -rf $d" EXIT
+  printf admin > "$d/MINIO_ROOT_USER"
+  openssl rand -hex 24 | tr -d "\n" > "$d/MINIO_ROOT_PASSWORD"
+  kubectl create secret generic "$MINIO_SECRET" -n "$MINIO_NAMESPACE" \
+    --from-file="$d/MINIO_ROOT_USER" --from-file="$d/MINIO_ROOT_PASSWORD"
+'
+./deploy.sh minio RELEASE.2025-04-22T22-12-26Z --env shared
+```
+
+Console di `http://nilam-ocr-minio-console.bribrain.dev.gcp.bri.co.id` (jaringan BRI/VPN), login dengan root dari
+Secret `nilam-ocr-minio-root`. Buat bucket dan **access key terpisah** per service di sana; root credential jangan
+dipakai aplikasi. Console di port 8080, bukan 9001, karena firewall L7 baru terbukti meloloskan 8000/8080. Host-nya
+satu **Ingress rule** di Ingress bersama nilam (lihat "Ingress"); chart memasang NEG dan BackendConfig (health check
+`/`, timeout 300 s) di port console. Root password harus kuat sebelum console dibuka ke jaringan BRI (ganti dengan
+`./scripts/secret.sh --env shared`, key `MINIO_ROOT_PASSWORD`, lalu restart).
+
+```bash
+./scripts/kube.sh --env shared -- kubectl patch ingress ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress -n bribrain-ocr-nilam --type json -p '[
+ {"op":"test","path":"/spec/rules/0/host","value":"ms-bribrain-nilam-ocr-paddle-ppocr-v6.bribrain.dev.gcp.bri.co.id"},
+ {"op":"add","path":"/spec/rules/-","value":{"host":"nilam-ocr-minio-console.bribrain.dev.gcp.bri.co.id","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"nilam-ocr-minio","port":{"name":"console"}}}}]}}}
+]'
+# tanpa Ingress: port-forward lalu buka http://localhost:9001
+./scripts/kube.sh --env shared -- kubectl port-forward -n bribrain-ocr-nilam svc/nilam-ocr-minio 9001:8080
+```
+
+Service per dokumen memakai `MINIO_ENDPOINT=nilam-ocr-minio.bribrain-ocr-nilam.svc.cluster.local:9000` dan
+`MINIO_SECURE=false`. Pindah data dari MinIO dev dengan `mc mirror` dari laptop (VPN menjangkau keduanya):
+
+```bash
+./scripts/kube.sh --env shared -- kubectl port-forward -n bribrain-ocr-nilam svc/nilam-ocr-minio 9000:9000  # terminal lain
+mc alias set old http://34.101.120.81:9000 <access-key-lama> <secret-key-lama>
+mc alias set new http://127.0.0.1:9000 admin <root-password-baru>
+mc mb new/ocr-branch && mc mirror old/ocr-branch new/ocr-branch
+```
+
+## Ingress (env `shared`)
+
+Backend dan admin UI dibuka lewat Ingress `gce-internal` (internal Application LB, terjangkau dari jaringan BRI/VPN),
+bukan Service LoadBalancer: GKE tidak bisa membuat firewall LoadBalancer di Shared VPC.
+
+| Host (HTTP) | Service |
+|---|---|
+| `ms-bribrain-nilam-ocr-orchestrator.bribrain.dev.gcp.bri.co.id` | `ms-bribrain-nilam-ocr-orchestrator` (backend) |
+| `mf-bribrain-nilam-ocr-admin-ui.bribrain.dev.gcp.bri.co.id` | `mf-bribrain-nilam-ocr-admin-ui` (admin UI) |
+| `nilam-ocr-minio-console.bribrain.dev.gcp.bri.co.id` | `nilam-ocr-minio` port `console` (MinIO console, lihat "MinIO") |
+
+DNS wildcard `*.bribrain.dev.gcp.bri.co.id` mengarah ke `10.213.192.196` (`gc-bribrain-dev-ilb-nilam-01`), IP
+Ingress paddle `ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress`. Di GKE satu Ingress = satu LB dan satu IP:port hanya
+bisa dipakai satu Ingress, jadi host kita menumpang sebagai **Ingress rule** di Ingress paddle itu (Ingress bersama
+nilam), bukan Ingress sendiri. Chart cukup memasang anotasi NEG dan BackendConfig (timeout 60 s, health check =
+path `readinessProbe`) di Service (`ingress.enabled: true`, `ingress.create: false`). Health check ditulis eksplisit
+karena GKE hanya menyalin `readinessProbe` dari pod yang sedang jalan saat backend dibuat; tanpa itu LB mengecek `GET
+/`, yang dijawab API dengan 404.
+
+Rule ditambahkan sekali (sepengetahuan tim paddle; kalau Ingress itu di-apply ulang dari YAML/Rancher mereka, rule
+ini hilang dan host kita kembali 404). Backup dulu, `test` membatalkan patch bila isinya tidak seperti yang
+diharapkan:
+
+```bash
+./scripts/kube.sh --env shared -- kubectl get ingress -n bribrain-ocr-nilam ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress -o yaml > paddle-ingress-backup.yaml
+./scripts/kube.sh --env shared -- kubectl patch ingress ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress -n bribrain-ocr-nilam --type json -p '[
+ {"op":"test","path":"/spec/rules/0/host","value":"ms-bribrain-nilam-ocr-paddle-ppocr-v6.bribrain.dev.gcp.bri.co.id"},
+ {"op":"add","path":"/spec/rules/-","value":{"host":"ms-bribrain-nilam-ocr-orchestrator.bribrain.dev.gcp.bri.co.id","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"ms-bribrain-nilam-ocr-orchestrator","port":{"number":80}}}}]}}},
+ {"op":"add","path":"/spec/rules/-","value":{"host":"mf-bribrain-nilam-ocr-admin-ui.bribrain.dev.gcp.bri.co.id","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"mf-bribrain-nilam-ocr-admin-ui","port":{"number":80}}}}]}}}
+]'
+```
+
+Cek dan tes (dari jaringan BRI/VPN):
+
+```bash
+./scripts/kube.sh --env shared -- kubectl get ingress -n bribrain-ocr-nilam ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress \
+  -o jsonpath='{.metadata.annotations.ingress\.kubernetes\.io/backends}{"\n"}'          # semua HEALTHY
+curl -i http://ms-bribrain-nilam-ocr-orchestrator.bribrain.dev.gcp.bri.co.id/health
+curl -I http://mf-bribrain-nilam-ocr-admin-ui.bribrain.dev.gcp.bri.co.id/
+```
+
+- `503 no healthy upstream` = backend UNHEALTHY: cek pod Ready dan health check LB (`gcloud compute health-checks
+  describe <backend k8s1-...> --region asia-southeast2`). `404 backend NotFound` = rule host-nya tidak ada di Ingress.
+- Deployment `0/0` tidak dinaikkan oleh helm maupun HPA (HPA berhenti di `replicas: 0`); naikkan sekali dengan
+  `kubectl scale deploy ... --replicas=1`.
+- Ingress sendiri per chart masih bisa dipakai (`ingress.create: true`, `host`, anotasi
+  `kubernetes.io/ingress.regional-static-ip-name`), asal tim infra me-reserve IP internal baru dan record DNS A untuk
+  host-nya (record khusus menang atas wildcard).
+- Port pod harus diizinkan firewall L7 di host project `common-sharenet-dev-02` (sumber proxy-only
+  `10.213.194.0/25` dan health check `130.211.0.0/22`, `35.191.0.0/16`). 8000 dan 8080 sudah terbukti jalan
+  (brimo-va, paddle), karena itu API di env ini memakai port 8000, bukan 8100. Kalau backend Ingress `UNHEALTHY`,
+  minta tim infra membuka port itu.
+- HTTPS butuh host langsung di bawah `gcp.bri.co.id`: sertifikat `gc-bribrain-dev-sslp-app-01` (`*.gcp.bri.co.id`)
+  tidak mencakup `*.bribrain.dev.gcp.bri.co.id`. Untuk HTTPS, ganti `host` dan tambahkan anotasi
+  `ingress.gcp.kubernetes.io/pre-shared-cert: gc-bribrain-dev-sslp-app-01`.
 
 ## Autoscaling (HPA)
 
