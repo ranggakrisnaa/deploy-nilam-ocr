@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    field.cattle.io/publicEndpoints: '[{"addresses":["10.213.192.196"],"port":80,"protocol":"HTTP","serviceName":"bribrain-ocr-nilam:ms-bribrain-nilam-ocr-paddle-ppocr-v6-service","ingressName":"bribrain-ocr-nilam:ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress","hostname":"ms-bribrain-nilam-ocr-paddle-ppocr-v6.bribrain.dev.gcp.bri.co.id","path":"/","allNodes":false}]'
+    ingress.kubernetes.io/backends: '{"k8s1-cdc5deab-bribrain-oc-ms-bribrain-nilam-ocr-padd-8-af76d16c":"HEALTHY","k8s1-cdc5deab-kube-system-default-http-backend-80-4681962e":"HEALTHY"}'
+    ingress.kubernetes.io/forwarding-rule: k8s2-fr-a7gtx33e-bribrain-oc-ms-bribrain-nilam-ocr-pad-6yb8xr3f
+    ingress.kubernetes.io/target-proxy: k8s2-tp-a7gtx33e-bribrain-oc-ms-bribrain-nilam-ocr-pad-6yb8xr3f
+    ingress.kubernetes.io/url-map: k8s2-um-a7gtx33e-bribrain-oc-ms-bribrain-nilam-ocr-pad-6yb8xr3f
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"networking.k8s.io/v1","kind":"Ingress","metadata":{"annotations":{"kubernetes.io/ingress.class":"gce-internal","kubernetes.io/ingress.regional-static-ip-name":"gc-bribrain-dev-ilb-nilam-01"},"labels":{"app":"ms-bribrain-nilam-ocr-paddle-ppocr-v6"},"name":"ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress","namespace":"bribrain-ocr-nilam"},"spec":{"rules":[{"host":"ms-bribrain-nilam-ocr-paddle-ppocr-v6.bribrain.dev.gcp.bri.co.id","http":{"paths":[{"backend":{"service":{"name":"ms-bribrain-nilam-ocr-paddle-ppocr-v6-service","port":{"number":80}}},"path":"/","pathType":"Prefix"}]}}]}}
+    kubernetes.io/ingress.class: gce-internal
+    kubernetes.io/ingress.regional-static-ip-name: gc-bribrain-dev-ilb-nilam-01
+  creationTimestamp: "2026-10-21T11:52:11Z"
+  finalizers:
+  - networking.gke.io/ingress-finalizer-V2
+  generation: 2
+  labels:
+    app: ms-bribrain-nilam-ocr-paddle-ppocr-v6
+  name: ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress
+  namespace: bribrain-ocr-nilam
+  resourceVersion: "1792647654691487010"
+  uid: 3682d5ec-55fd-4eef-b2a8-b5a604597871
+spec:
+  rules:
+  - host: ms-bribrain-nilam-ocr-paddle-ppocr-v6.bribrain.dev.gcp.bri.co.id
+    http:
+      paths:
+      - backend:
+          service:
+            name: ms-bribrain-nilam-ocr-paddle-ppocr-v6-service
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+status:
+  loadBalancer:
+    ingress:
+    - ip: 10.213.192.196
