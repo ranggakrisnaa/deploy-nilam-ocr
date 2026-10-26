@@ -78,10 +78,12 @@ gke_connect() {
   trap cleanup EXIT
   export KUBECONFIG="$WORK_DIR/kubeconfig"
   log "kredensial GKE $GKE_CLUSTER ($GKE_PROJECT, $GKE_REGION)"
-  gcloud container clusters get-credentials "$GKE_CLUSTER" "${opts[@]}" >/dev/null 2>&1 \
-    || die "get-credentials gagal; cek 'gcloud auth login' dan akses ke project $GKE_PROJECT"
+  local err
+  err="$(gcloud container clusters get-credentials "$GKE_CLUSTER" "${opts[@]}" 2>&1 >/dev/null)" \
+    || die "get-credentials gagal sebagai '$(gcloud config get account 2>/dev/null)': $err"
   KUBE_CONTEXT="gke_${GKE_PROJECT}_${GKE_REGION}_${GKE_CLUSTER}"
-  [[ -z "${GKE_BASTION:-}" ]] || open_tunnel
+  # Run on the bastion itself, the private endpoint is reachable without a tunnel.
+  [[ -z "${GKE_BASTION:-}" || "$GKE_BASTION" == "$(hostname -s)" ]] || open_tunnel
 }
 
 # Private control plane: SOCKS tunnel over IAP through a bastion inside its authorized networks.
@@ -153,6 +155,7 @@ ensure_secret() {
 # Fails here, in seconds, instead of as ImagePullBackOff after helm's timeout.
 check_image() {
   [[ -n "${SKIP_IMAGE_CHECK:-}" ]] && return 0
+  need_tools docker
   local out
   out="$(docker buildx imagetools inspect "$1" 2>&1 >/dev/null)" \
     || die "image $1 tidak bisa dibaca dari Nexus (tag belum di-push, belum 'docker login $NEXUS_REGISTRY', atau VPN putus): ${out##*$'\n'}"
@@ -203,7 +206,7 @@ deploy_component() {
     return
   fi
 
-  need_tools gcloud kubectl helm docker
+  need_tools gcloud kubectl helm
   check_image "$ref"
   gke_connect
   ensure_namespace
