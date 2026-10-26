@@ -5,7 +5,7 @@
 # non-root on a read-only root filesystem, and the only default Service is ClusterIP; the public LoadBalancer of
 # the old chart is opt-in (externalService).
 #
-# ponytail: one replica, single drive. A restart or node drain pauses object storage for every team until the
+# One replica, single drive. A restart or node drain pauses object storage for every team until the
 # pod is back; data survives on the PVC. Raising replicas on a plain StatefulSet does not form an erasure set:
 # for HA use the MinIO operator (distributed mode) or GCS.
 

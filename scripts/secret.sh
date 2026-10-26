@@ -53,7 +53,7 @@ printf '{"data":{"%s":"%s"}}' "$key" "$(printf '%s' "$val" | base64 | tr -d '\n'
   | kc patch secret "$name" --type merge --patch-file /dev/stdin >/dev/null
 log "Secret $NAMESPACE/$name: $key diubah"
 
-# ponytail: plain text match on the pod spec; a container or volume named like the Secret also shows up here.
+# Plain text match on the pod spec; a container or volume named like the Secret also shows up here.
 users="$(kc get deploy,sts -o jsonpath='{range .items[*]}{.kind}/{.metadata.name} {.spec.template.spec}{"\n"}{end}' \
   | grep -F "\"name\":\"$name\"" | awk '{print tolower($1)}' || true)"
 if [[ -z "$users" ]]; then

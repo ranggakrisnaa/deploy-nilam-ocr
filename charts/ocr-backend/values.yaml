@@ -48,7 +48,7 @@ securityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop: ["ALL"]
-  # ponytail: writable rootfs, uploads spool to /tmp; turn on with an emptyDir /tmp once LOG_FILE is unset everywhere.
+  # Writable rootfs, uploads spool to /tmp; turn on with an emptyDir /tmp once LOG_FILE is unset everywhere.
   readOnlyRootFilesystem: false
 
 # Elastic APM. Empty serverUrl = no APM env rendered. Token/API key belong in existingSecret

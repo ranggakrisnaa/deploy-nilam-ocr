@@ -3,7 +3,7 @@
 # One Redis shared by many teams. Each team gets its own ACL user, limited to its key prefixes and without
 # @dangerous commands; `scripts/services/redis/user.sh` creates and rotates them (README "Redis bersama").
 #
-# ponytail: one replica, no Sentinel. A restart or node drain pauses every team's Redis for the seconds the
+# One replica, no Sentinel. A restart or node drain pauses every team's Redis for the seconds the
 # pod takes to come back; data survives it through the AOF on the PVC. Move to Memorystore for HA.
 
 nameOverride: ""
