@@ -9,10 +9,11 @@ Usage:
   ./deploy.sh ocr-backend <tag> [--env <env>] [--dry-run] [-- <helm args...>]
   ./deploy.sh rbac-ui <tag> [--env <env>] [--dry-run] [-- <helm args...>]
   ./deploy.sh redis <tag> [--env <env>] [--dry-run] [-- <helm args...>]
+  ./deploy.sh minio <tag> [--env <env>] [--dry-run] [-- <helm args...>]
   ./deploy.sh application <backend-tag> <rbac-ui-tag> [--env <env>] [--dry-run]
 
 'application' deploys the OCR backend first, then the RBAC UI.
-Redis is deployed separately because it is shared infrastructure.
+Redis and MinIO are deployed separately because they are shared infrastructure.
 USAGE
 }
 
@@ -33,6 +34,9 @@ case "$service" in
     ;;
   redis)
     exec "$ROOT_DIR/scripts/services/redis/deploy.sh" "$@"
+    ;;
+  minio)
+    exec "$ROOT_DIR/scripts/services/minio/deploy.sh" "$@"
     ;;
   application)
     [[ $# -ge 2 ]] || { usage >&2; exit 2; }

@@ -1,0 +1,14 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ include "minio.fullname" . }}-console
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+spec:
+  timeoutSec: {{ .Values.ingress.timeoutSec }}
+  # Explicit: the readinessProbe checks the API port, so GKE cannot copy a console health check from it.
+  healthCheck:
+    type: HTTP
+    requestPath: /
+{{- end }}

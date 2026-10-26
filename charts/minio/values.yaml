@@ -1,0 +1,93 @@
+# Defaults for every environment. Environment-specific values live in environments/<env>/minio.yaml.
+#
+# Ported from nilam-ocr-orchestration/deploy (templates/minio.yaml): same image, ports and console session. What
+# changed: the image comes from Nexus, the root credentials from a Secret made outside the chart, the pod runs as
+# non-root on a read-only root filesystem, and the only default Service is ClusterIP; the public LoadBalancer of
+# the old chart is opt-in (externalService).
+#
+# ponytail: one replica, single drive. A restart or node drain pauses object storage for every team until the
+# pod is back; data survives on the PVC. Raising replicas on a plain StatefulSet does not form an erasure set:
+# for HA use the MinIO operator (distributed mode) or GCS.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: new-nexus.gcp.bri.co.id
+  # Built from source by nilam-ocr-orchestration/deploy/minio/Dockerfile (the official images can no longer be
+  # pulled anonymously) and copied into Nexus (README "MinIO").
+  repository: bribrain/dev/nilam/nilam-ocr-orchestrator/minio
+  # Empty = .Chart.AppVersion.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: nexus-pull-secret
+
+# Secret created outside the chart with MINIO_ROOT_USER and MINIO_ROOT_PASSWORD (min 8 characters), read via
+# envFrom. Root is for admins only: services get their own access key and bucket.
+existingSecret: minio-root
+
+# Console login session length (MinIO default 12h). Share links die with the session, so this caps their
+# lifetime; 168h is the effective max because presigned URLs (S3 SigV4) cannot exceed 7 days.
+browserSessionDuration: 168h
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  # Makes the fresh PVC writable for the non-root user (the old chart ran as root because its PVC already was).
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  # MinIO writes only to /data and /tmp (emptyDir).
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+podAnnotations: {}
+
+ports:
+  # S3 API: called by services, and by browsers following presigned URLs.
+  api: 9000
+  # Web console, for people.
+  console: 9001
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+persistence:
+  enabled: true
+  # Empty uses the cluster default; environments can override it when node storage requires another disk type.
+  storageClass: ""
+  size: 20Gi
+
+# Second Service, type LoadBalancer, for clients outside the cluster (presigned URLs in browsers, the console).
+# Plain HTTP: keep it internal with the annotation below or restrict loadBalancerSourceRanges to office IPs.
+# Console behind a GKE Ingress managed elsewhere (a host rule in a shared Ingress): NEG and BackendConfig on the
+# Service's console port. The S3 API stays in-cluster.
+ingress:
+  enabled: false
+  # LB backend timeout; console uploads of large objects outlast the 30 s default.
+  timeoutSec: 300
+
+externalService:
+  enabled: false
+  annotations: {}
+  #  networking.gke.io/load-balancer-type: "Internal"
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+
+terminationGracePeriodSeconds: 30

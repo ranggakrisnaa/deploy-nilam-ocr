@@ -1,0 +1,22 @@
+# Console at http://nilam-ocr-minio-console.bribrain.dev.gcp.bri.co.id through a host rule in the shared nilam
+# Ingress (README "MinIO"). 8080, not 9001: the host project's L7 firewall is only known to admit 8000/8080 from the
+# LB proxies. The API keeps 9000, so in-cluster MINIO_ENDPOINTs do not change.
+ports:
+  console: 8080
+ingress:
+  enabled: true
+
+# The shared cluster's N4 nodes require Hyperdisk; the default standard-rwo (pd-balanced) cannot attach. Same
+# StorageClass as Redis.
+persistence:
+  storageClass: redis-hyperdisk-balanced
+  size: 20Gi
+
+# Same sizing as the rest of bribrain-ocr-nilam.
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi

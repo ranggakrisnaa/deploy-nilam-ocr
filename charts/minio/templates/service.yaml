@@ -1,0 +1,60 @@
+# In-cluster address for services: http://<fullname>.<namespace>.svc.cluster.local:<ports.api>.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "minio.fullname" . }}
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+  {{- if .Values.ingress.enabled }}
+  annotations:
+    # Container-native load balancing; Shared VPC clusters do not add the NEG annotation on their own.
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"ports": {"console": "{{ include "minio.fullname" . }}-console"}}'
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api
+      protocol: TCP
+    - name: console
+      port: {{ .Values.ports.console }}
+      targetPort: console
+      protocol: TCP
+{{- if .Values.externalService.enabled }}
+---
+# Separate from the one above so in-cluster traffic never goes through the LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "minio.fullname" . }}-external
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+  {{- with .Values.externalService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with .Values.externalService.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.externalService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api
+      protocol: TCP
+    - name: console
+      port: {{ .Values.ports.console }}
+      targetPort: console
+      protocol: TCP
+{{- end }}

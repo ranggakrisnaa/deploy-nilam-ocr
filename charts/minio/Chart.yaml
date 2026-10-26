@@ -1,0 +1,9 @@
+apiVersion: v2
+name: minio
+description: Single-node MinIO (S3 API + console) shared by the per-document OCR services.
+type: application
+version: 1.0.0
+appVersion: "RELEASE.2025-04-22T22-12-26Z"
+kubeVersion: ">=1.25.0-0"
+maintainers:
+  - name: BRIBrain NILAM
