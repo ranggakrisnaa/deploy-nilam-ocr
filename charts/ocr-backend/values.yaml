@@ -113,13 +113,27 @@ api:
     failureThreshold: 3
 
 service:
-  # ClusterIP by default; environments expose it with LoadBalancer.
+  # ClusterIP by default; environments expose it with LoadBalancer or the ingress below.
   type: ClusterIP
   port: 80
   # Reserved static IP, so the address survives a reinstall. Empty = ephemeral.
   loadBalancerIP: ""
   loadBalancerSourceRanges: []
   annotations: {}
+
+# GKE Ingress in front of the api Service (gce-internal = internal Application LB, gce = external). TLS cert and
+# static IP come in as annotations from environments/*.
+ingress:
+  # The Service sits behind a GKE Ingress: NEG and BackendConfig (timeout, health check).
+  enabled: false
+  # Render the Ingress object too. false = the host rule lives in an Ingress managed elsewhere, e.g. a shared one.
+  create: true
+  className: gce-internal
+  # Empty = every host, so it can be tried by IP before DNS exists.
+  host: ""
+  annotations: {}
+  # LB backend timeout. The 30 s default cuts off a slow sync extract-ocr (NPWP waits 20 s, then Datahub up to 10 s).
+  timeoutSec: 60
 
 worker:
   replicas: 1

@@ -4,9 +4,16 @@ metadata:
   name: {{ include "ocr-rbac-ui.fullname" . }}
   labels:
     {{- include "ocr-rbac-ui.labels" . | nindent 4 }}
-  {{- with .Values.service.annotations }}
+  {{- if or .Values.service.annotations .Values.ingress.enabled }}
   annotations:
+    {{- with .Values.service.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.ingress.enabled }}
+    # Container-native load balancing; Shared VPC clusters do not add the NEG annotation on their own.
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "{{ include "ocr-rbac-ui.fullname" . }}"}'
+    {{- end }}
   {{- end }}
 spec:
   type: {{ .Values.service.type }}

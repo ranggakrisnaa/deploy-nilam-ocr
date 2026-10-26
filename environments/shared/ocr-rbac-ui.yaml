@@ -2,6 +2,24 @@
 # the scripts; backend.serviceName keeps the chart default, the fullnameOverride of shared/ocr-backend.yaml.
 
 fullnameOverride: mf-bribrain-nilam-ocr-admin-ui
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi
+
+# No LoadBalancer: GKE cannot create its firewall rule in the Shared VPC, so the IP never answered. The Ingress
+# below needs none for port 8080.
 service:
-  type: LoadBalancer
-  loadBalancerIP: ""
+  type: ClusterIP
+
+# Reached at http://mf-bribrain-nilam-ocr-admin-ui.bribrain.dev.gcp.bri.co.id through the shared nilam Ingress
+# ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress: the *.bribrain.dev.gcp.bri.co.id wildcard points at its IP
+# 10.213.192.196, and on GKE one IP:port takes one Ingress, so the host rule was added there (README "Ingress").
+# This chart only adds the NEG and BackendConfig the shared LB needs.
+ingress:
+  enabled: true
+  create: false

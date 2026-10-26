@@ -6,7 +6,36 @@
 # The rbac-ui nginx proxies to this Service name.
 fullnameOverride: ms-bribrain-nilam-ocr-orchestrator
 
-# Shared Redis user from `./scripts/services/redis/user.sh nilam-ocr --to nilam-ocr-orchestrator`. An explicit env var
+api:
+  # The Ingress sends traffic straight to the pod port (NEG). The host project's L7 firewall rule is known to
+  # admit 8000/8080 from the proxy and health-check ranges (brimo-va runs on them); the default 8100 is unproven.
+  port: 8000
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+worker:
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+# Reached at http://ms-bribrain-nilam-ocr-orchestrator.bribrain.dev.gcp.bri.co.id through the shared nilam Ingress
+# ms-bribrain-nilam-ocr-paddle-ppocr-v6-ingress: the *.bribrain.dev.gcp.bri.co.id wildcard points at its IP
+# 10.213.192.196, and on GKE one IP:port takes one Ingress, so the host rule was added there (README "Ingress").
+# This chart only adds the NEG and BackendConfig the shared LB needs.
+ingress:
+  enabled: true
+  create: false
+
+# Shared Redis user from `./scripts/services/redis/user.sh nilam-ocr --to bribrain-ocr-nilam`. An explicit env var
 # wins over the REDIS_URL in existingSecret (envFrom), which still points at the unreachable dev VM.
 extraEnv:
   - name: REDIS_URL
@@ -14,3 +43,15 @@ extraEnv:
       secretKeyRef:
         name: redis-nilam-ocr
         key: REDIS_URL
+  # Needs image 506e4d4 or later, which reads the per-type deadline: an older image would apply 300 to mutasi too.
+  # Mutasi rekening keeps the old 7200 until its real worst case is measured; every other type gives up after 5 min.
+  - name: OCR_CALLBACK_DEADLINE_SECONDS
+    value: "300"
+  - name: OCR_MUTASI_REKENING_CALLBACK_DEADLINE_SECONDS
+    value: "7200"
+  # The image defaults, made explicit so they can be tuned here. Bounds checked at startup: threshold 1-11,
+  # cooldown above 0 and below 60 (the reaper's window); outside them the pods fail to start.
+  - name: CIRCUIT_BREAKER_THRESHOLD
+    value: "5"
+  - name: CIRCUIT_BREAKER_COOLDOWN_SECONDS
+    value: "30"

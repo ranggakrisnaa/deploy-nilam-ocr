@@ -10,3 +10,11 @@ Alamat Admin UI (LoadBalancer, bisa butuh 1-2 menit):
 Coba lokal:
   kubectl port-forward svc/{{ include "ocr-rbac-ui.fullname" . }} -n {{ .Release.Namespace }} 8080:{{ .Values.service.port }}
 {{- end }}
+{{- if and .Values.ingress.enabled (not .Values.ingress.create) }}
+
+Di belakang Ingress yang dikelola di luar chart ini (NEG + BackendConfig {{ include "ocr-rbac-ui.fullname" . }}).
+{{- else if .Values.ingress.enabled }}
+
+Alamat Ingress ({{ .Values.ingress.className }}{{ with .Values.ingress.host }}, host {{ . }}{{ end }}; LB baru butuh 5-10 menit):
+  kubectl get ingress {{ include "ocr-rbac-ui.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+{{- end }}

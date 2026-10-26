@@ -97,6 +97,20 @@ service:
   loadBalancerSourceRanges: []
   annotations: {}
 
+# GKE Ingress in front of the Service (gce-internal = internal Application LB, gce = external). TLS cert and static
+# IP come in as annotations from environments/*.
+ingress:
+  # The Service sits behind a GKE Ingress: NEG and BackendConfig (timeout, health check).
+  enabled: false
+  # Render the Ingress object too. false = the host rule lives in an Ingress managed elsewhere, e.g. a shared one.
+  create: true
+  className: gce-internal
+  # Empty = every host, so it can be tried by IP before DNS exists.
+  host: ""
+  annotations: {}
+  # LB backend timeout. nginx proxies /v1 to the backend, so it matches the backend's ingress timeout.
+  timeoutSec: 60
+
 autoscaling:
   enabled: true
   minReplicas: 1

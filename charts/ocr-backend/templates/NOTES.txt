@@ -11,6 +11,14 @@ Alamat API (LoadBalancer, bisa butuh 1-2 menit):
 
 Dari dalam cluster: http://{{ include "ocr-backend.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
 {{- end }}
+{{- if and .Values.ingress.enabled (not .Values.ingress.create) }}
+
+Di belakang Ingress yang dikelola di luar chart ini (NEG + BackendConfig {{ include "ocr-backend.fullname" . }}).
+{{- else if .Values.ingress.enabled }}
+
+Alamat Ingress ({{ .Values.ingress.className }}{{ with .Values.ingress.host }}, host {{ . }}{{ end }}; LB baru butuh 5-10 menit):
+  kubectl get ingress {{ include "ocr-backend.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+{{- end }}
 
 Autoscaling:
   kubectl get hpa -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}

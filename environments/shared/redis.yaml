@@ -1,3 +1,14 @@
 # The shared cluster's N4 nodes require Hyperdisk; the default standard-rwo (pd-balanced) cannot attach.
 persistence:
   storageClass: redis-hyperdisk-balanced
+
+# Shared by every team: raise maxmemory and the memory limit together as teams join. maxmemory leaves ~128Mi of the 512Mi limit for AOF
+# rewrites and client buffers; with noeviction, writes fail once 384mb is full instead of the pod OOMing.
+maxmemory: 384mb
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi

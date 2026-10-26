@@ -7,7 +7,7 @@
 #   ./scripts/services/redis/user.sh <user> --keys '<pola key...>' --to <namespace team> [--env shared]
 #
 # Contoh:
-#   ./scripts/services/redis/user.sh nilam-ocr --env shared --to nilam-ocr-orchestrator --keys 'ocr ocr:* arq:* datahub:*'
+#   ./scripts/services/redis/user.sh nilam-ocr --env shared --to bribrain-ocr-nilam --keys 'ocr ocr:* arq:* datahub:*'
 #   ./scripts/services/redis/user.sh team-b --env shared --to team-b --keys 'team-b:*'
 source "$(dirname "${BASH_SOURCE[0]}")/../../_lib.sh"
 DEPLOY_ENV="${DEPLOY_ENV:-dev}"

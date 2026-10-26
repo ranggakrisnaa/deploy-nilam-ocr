@@ -1,0 +1,46 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullname := include "ocr-rbac-ui.fullname" . }}
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "ocr-rbac-ui.labels" . | nindent 4 }}
+spec:
+  timeoutSec: {{ .Values.ingress.timeoutSec }}
+  # Explicit: GKE copies the readinessProbe only from pods running when the backend is created, otherwise it
+  # probes GET /.
+  healthCheck:
+    type: HTTP
+    requestPath: {{ dig "httpGet" "path" "/" .Values.readinessProbe }}
+{{- if .Values.ingress.create }}
+{{- $backend := dict "service" (dict "name" $fullname "port" (dict "name" "http")) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "ocr-rbac-ui.labels" . | nindent 4 }}
+  annotations:
+    # GKE reads the class from this annotation, not spec.ingressClassName.
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.host }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              {{- toYaml $backend | nindent 14 }}
+  {{- else }}
+  defaultBackend:
+    {{- toYaml $backend | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
